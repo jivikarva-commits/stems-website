@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Subscription Limits – Test Suite</title>
+  <style>
+    body { font-family: monospace; margin: 20px; background: #f5f5f5; }
+    h1 { font-size: 18px; }
+    .pass { color: green; }
+    .fail { color: red; font-weight: bold; }
+    #results { white-space: pre-wrap; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>Subscription Limits – Automated Tests</h1>
+  <div id="results"></div>
+
+  <script src="js/subscription-limits.js"></script>
+  <script src="js/api-helpers.js"></script>
+  <script>
+    (function () {
+      var out = document.getElementById('results');
+      var passed = 0;
+      var failed = 0;
+
+      function log(msg, ok) {
+        var span = document.createElement('span');
+        span.className = ok ? 'pass' : 'fail';
+        span.textContent = (ok ? '✓ PASS' : '✗ FAIL') + '  ' + msg + '\n';
+        out.appendChild(span);
+        if (ok) passed++; else failed++;
+      }
+
+      function assert(condition, msg) {
+        log(msg, !!condition);
+      }
+
+      function summary() {
+        var total = passed + failed;
+        var span = document.createElement('span');
+        span.textContent = '\n' + passed + '/' + total + ' tests passed.\n';
+        span.className = failed === 0 ? 'pass' : 'fail';
+        out.appendChild(span);
+      }
+
+      // Clean state before each run
+      SubscriptionLimits.clearAll();
+
+      // ---------------------------------------------------
+      // 1. Initialisation
+      // ---------------------------------------------------
+      var data = SubscriptionLimits.init('free');
+      assert(data.plan === 'free', 'init() sets plan to free');
+      assert(data.ai_chat_used_today === 0, 'init() sets ai_chat_used_today to 0');
+      assert(data.revision_notes_total === 0, 'init() sets revision_notes_total to 0');
+
+      // ---------------------------------------------------
+      // 2. checkLimit returns correct values on fresh state
+      // ---------------------------------------------------
+      var check = SubscriptionLimits.checkLimit('ai_chat');
+      assert(check.allowed === true, 'ai_chat allowed on fresh state');
+      assert(check.used === 0, 'ai_chat used=0 on fresh state');
+      assert(check.limit === 15, 'ai_chat limit=15 for free plan');
+      assert(check.remaining === 15, 'ai_chat remaining=15 on fresh state');
+      assert(check.message === '', 'ai_chat no message when under limit');
+
+      // ---------------------------------------------------
+      // 3. recordUsage increments counter independently
+      // ---------------------------------------------------
+      SubscriptionLimits.recordUsage('ai_chat');
+      check = SubscriptionLimits.checkLimit('ai_chat');
+      assert(check.used === 1, 'ai_chat used=1 after one recordUsage');
+      assert(check.remaining === 14, 'ai_chat remaining=14 after one use');
+
+      // Other features must be unaffected
+      var mockCheck = SubscriptionLimits.checkLimit('mock_tests');
+      assert(mockCheck.used === 0, 'mock_tests still used=0 after ai_chat use');
+      assert(mockCheck.allowed === true, 'mock_tests still allowed after ai_chat use');
+
+      var draftCheck = SubscriptionLimits.checkLimit('drafts');
+      assert(draftCheck.used === 0, 'drafts still used=0 after ai_chat use');
+
+      // ---------------------------------------------------
+      // 4. Exhaust ai_chat limit – other features unaffected
+      // ---------------------------------------------------
+      for (var i = 1; i < 15; i++) {
+        SubscriptionLimits.recordUsage('ai_chat');
+      }
+      check = SubscriptionLimits.checkLimit('ai_chat');
+      assert(check.allowed === false, 'ai_chat blocked after 15 uses');
+      assert(check.used === 15, 'ai_chat used=15');
+      assert(check.remaining === 0, 'ai_chat remaining=0');
+      assert(check.message.indexOf('15') !== -1, 'ai_chat limit message mentions 15');
+      assert(check.message.indexOf('Upgrade') !== -1, 'ai_chat limit message mentions Upgrade');
+
+      // Verify all other features are STILL allowed
+      assert(SubscriptionLimits.checkLimit('mock_tests').allowed === true,
+        'mock_tests still allowed when ai_chat exhausted');
+      assert(SubscriptionLimits.checkLimit('drafts').allowed === true,
+        'drafts still allowed when ai_chat exhausted');
+      assert(SubscriptionLimits.checkLimit('case_law').allowed === true,
+        'case_law still allowed when ai_chat exhausted');
+      assert(SubscriptionLimits.checkLimit('study_plans').allowed === true,
+        'study_plans still allowed when ai_chat exhausted');
+      assert(SubscriptionLimits.checkLimit('revision_notes').allowed === true,
+        'revision_notes still allowed when ai_chat exhausted');
+
+      // ---------------------------------------------------
+      // 5. Exhaust mock_tests independently
+      // ---------------------------------------------------
+      for (var j = 0; j < 5; j++) {
+        SubscriptionLimits.recordUsage('mock_tests');
+      }
+      assert(SubscriptionLimits.checkLimit('mock_tests').allowed === false,
+        'mock_tests blocked after 5 uses');
+      // drafts should still work
+      assert(SubscriptionLimits.checkLimit('drafts').allowed === true,
+        'drafts still allowed when mock_tests exhausted');
+
+      // ---------------------------------------------------
+      // 6. revision_notes is a total counter (not daily)
+      // ---------------------------------------------------
+      for (var k = 0; k < 10; k++) {
+        SubscriptionLimits.recordUsage('revision_notes');
+      }
+      var rnCheck = SubscriptionLimits.checkLimit('revision_notes');
+      assert(rnCheck.allowed === false, 'revision_notes blocked after 10 saves');
+      assert(rnCheck.message.indexOf('daily') === -1,
+        'revision_notes message does NOT say daily');
+
+      // ---------------------------------------------------
+      // 7. resetDailyCounters resets daily but NOT revision_notes
+      // ---------------------------------------------------
+      SubscriptionLimits.resetDailyCounters();
+      assert(SubscriptionLimits.checkLimit('ai_chat').used === 0,
+        'ai_chat reset to 0 after resetDailyCounters');
+      assert(SubscriptionLimits.checkLimit('mock_tests').used === 0,
+        'mock_tests reset to 0 after resetDailyCounters');
+      assert(SubscriptionLimits.checkLimit('drafts').used === 0,
+        'drafts reset to 0 after resetDailyCounters');
+      assert(SubscriptionLimits.checkLimit('case_law').used === 0,
+        'case_law reset to 0 after resetDailyCounters');
+      assert(SubscriptionLimits.checkLimit('study_plans').used === 0,
+        'study_plans reset to 0 after resetDailyCounters');
+      assert(SubscriptionLimits.checkLimit('revision_notes').used === 10,
+        'revision_notes NOT reset by resetDailyCounters (still 10)');
+
+      // ---------------------------------------------------
+      // 8. changePlan updates limits
+      // ---------------------------------------------------
+      SubscriptionLimits.changePlan('pro');
+      assert(SubscriptionLimits.getCurrentPlan() === 'pro', 'plan changed to pro');
+      assert(SubscriptionLimits.checkLimit('ai_chat').limit === 50,
+        'ai_chat limit=50 on pro plan');
+      assert(SubscriptionLimits.checkLimit('revision_notes').limit === 50,
+        'revision_notes limit=50 on pro plan');
+
+      SubscriptionLimits.changePlan('premium');
+      assert(SubscriptionLimits.checkLimit('ai_chat').limit === -1,
+        'ai_chat unlimited on premium plan');
+
+      // ---------------------------------------------------
+      // 9. Unknown feature returns allowed=false
+      // ---------------------------------------------------
+      var unknownCheck = SubscriptionLimits.checkLimit('nonexistent');
+      assert(unknownCheck.allowed === false, 'unknown feature returns allowed=false');
+
+      // ---------------------------------------------------
+      // 10. getUsageSummary returns all features
+      // ---------------------------------------------------
+      var summaryObj = SubscriptionLimits.getUsageSummary();
+      assert(summaryObj.ai_chat !== undefined, 'summary includes ai_chat');
+      assert(summaryObj.mock_tests !== undefined, 'summary includes mock_tests');
+      assert(summaryObj.drafts !== undefined, 'summary includes drafts');
+      assert(summaryObj.case_law !== undefined, 'summary includes case_law');
+      assert(summaryObj.study_plans !== undefined, 'summary includes study_plans');
+      assert(summaryObj.revision_notes !== undefined, 'summary includes revision_notes');
+
+      // ---------------------------------------------------
+      // 11. ApiHelpers – learnChat blocks when ai_chat exhausted
+      // ---------------------------------------------------
+      SubscriptionLimits.clearAll();
+      SubscriptionLimits.init('free');
+      // Exhaust ai_chat
+      for (var m = 0; m < 15; m++) {
+        SubscriptionLimits.recordUsage('ai_chat');
+      }
+
+      var apiTestsDone = 0;
+      var apiTestsTotal = 3;
+
+      function finishApiTests() {
+        apiTestsDone++;
+        if (apiTestsDone === apiTestsTotal) {
+          summary();
+        }
+      }
+
+      ApiHelpers.learnChat('test question').then(function () {
+        log('learnChat should reject when limit reached', false);
+        finishApiTests();
+      }).catch(function (err) {
+        assert(err.limitReached === true, 'learnChat rejects with limitReached when ai_chat exhausted');
+        assert(err.feature === 'ai_chat', 'learnChat error.feature is ai_chat');
+
+        // 12. ApiHelpers – startMockTest still works when ai_chat exhausted
+        ApiHelpers.startMockTest({}).then(function (result) {
+          assert(result.testId !== undefined, 'startMockTest succeeds when ai_chat exhausted');
+          finishApiTests();
+        }).catch(function () {
+          log('startMockTest should succeed when ai_chat exhausted', false);
+          finishApiTests();
+        });
+
+        // 13. ApiHelpers – evaluateDraft still works when ai_chat exhausted
+        ApiHelpers.evaluateDraft('test draft').then(function (result) {
+          assert(result.evaluation !== undefined, 'evaluateDraft succeeds when ai_chat exhausted');
+          finishApiTests();
+        }).catch(function () {
+          log('evaluateDraft should succeed when ai_chat exhausted', false);
+          finishApiTests();
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
